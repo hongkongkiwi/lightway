@@ -148,6 +148,12 @@ impl AuthRateLimiter {
     pub fn record_attempt(&self, addr: &SocketAddr) -> bool {
         self.rate_limiter.record_request(addr)
     }
+
+    /// Reset rate limit for a specific peer address (e.g., after successful auth)
+    pub fn reset(&self, addr: &SocketAddr) {
+        let mut buckets = self.rate_limiter.inner.write();
+        buckets.remove(addr);
+    }
 }
 
 impl Default for AuthRateLimiter {
