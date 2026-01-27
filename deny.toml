@@ -4,10 +4,13 @@ db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
 ignore = [
-    # yaml_rust is unmaintained, which is a dependency of twelf. Ignoring until its fixed
+    // TODO: Review by 2025-07-01 - yaml_rust is unmaintained, which is a dependency of twelf.
+    // Monitor upstream: https://github.com/chyh1990/yaml-rust
+    // Consider switching to maintained alternatives (e.g., serde_yaml with libyaml)
     "RUSTSEC-2024-0320",
-    # paste is unmaintained, which is a dependency of fs-mistrust->pwd-grp. Ignoring until its fixed
-    # https://gitlab.torproject.org/tpo/core/rust-pwd-grp/-/issues/5
+    // TODO: Review by 2025-07-01 - paste is unmaintained, which is a dependency of fs-mistrust->pwd-grp.
+    // https://gitlab.torproject.org/tpo/core/rust-pwd-grp/-/issues/5
+    // This affects user/group lookup on Linux - monitor for fix
     "RUSTSEC-2024-0436",
 ]
 
