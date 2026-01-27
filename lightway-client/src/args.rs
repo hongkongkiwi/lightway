@@ -72,14 +72,17 @@ pub struct Config {
     pub tun_name: Option<String>,
 
     /// Local IP to use in Tun device
+    /// This is typically overridden by server configuration
     #[clap(long, default_value = "100.64.0.6")]
     pub tun_local_ip: Ipv4Addr,
 
     /// Peer IP to use in Tun device
+    /// This is typically overridden by server configuration
     #[clap(long, default_value = "100.64.0.5")]
     pub tun_peer_ip: Ipv4Addr,
 
     /// DNS IP to use in Tun device
+    /// This is typically overridden by server configuration
     #[clap(long, default_value = "100.64.0.1")]
     pub tun_dns_ip: Ipv4Addr,
 
