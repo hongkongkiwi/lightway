@@ -42,7 +42,7 @@ use crate::borrowed_bytesmut::BorrowedBytesMut;
 use bytes::{Buf, BufMut, BytesMut};
 use more_asserts::*;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
-use rand::Rng;
+use rand::{Rng, TryRngCore};
 
 // A module for each frame type with a payload
 mod auth_failure;
@@ -158,6 +158,14 @@ impl rand::distr::Distribution<SessionId> for rand::distr::StandardUniform {
             }
         }
     }
+}
+
+/// Generate a cryptographically secure random SessionId using OS randomness
+pub fn secure_random_session_id() -> SessionId {
+    let mut bytes = [0u8; 8];
+    // OsRng::try_fill_bytes is the fallible version
+    rand::rngs::OsRng.try_fill_bytes(&mut bytes).expect("Failed to generate random bytes");
+    SessionId(bytes)
 }
 
 impl std::fmt::Debug for SessionId {
