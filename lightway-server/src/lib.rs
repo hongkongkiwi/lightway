@@ -4,6 +4,9 @@ mod io;
 mod ip_manager;
 pub mod metrics;
 mod statistics;
+mod rate_limiter;
+
+pub use rate_limiter::{AuthRateLimiter, RateLimiterConfig};
 
 use bytesize::ByteSize;
 use connection::Connection;
@@ -68,7 +71,19 @@ pub struct AuthState<'a> {
     pub internal_ip: &'a Option<Ipv4Addr>,
 }
 
-struct AuthAdapter<SA: for<'a> ServerAuth<AuthState<'a>>>(SA);
+struct AuthAdapter<SA: for<'a> ServerAuth<AuthState<'a>>> {
+    auth: SA,
+    rate_limiter: Option<AuthRateLimiter>,
+}
+
+impl<SA: for<'a> ServerAuth<AuthState<'a>>> AuthAdapter<SA> {
+    pub fn new(auth: SA) -> Self {
+        Self {
+            auth,
+            rate_limiter: Some(AuthRateLimiter::new()),
+        }
+    }
+}
 
 impl<SA: for<'a> ServerAuth<AuthState<'a>>> ServerAuth<connection::ConnectionState>
     for AuthAdapter<SA>
@@ -78,12 +93,21 @@ impl<SA: for<'a> ServerAuth<AuthState<'a>>> ServerAuth<connection::ConnectionSta
         method: &AuthMethod,
         app_state: &mut connection::ConnectionState,
     ) -> ServerAuthResult {
+        // Check rate limiting if limiter is configured
+        if let Some(limiter) = &self.rate_limiter {
+            if limiter.is_rate_limited(&app_state.peer_addr) {
+                tracing::warn!(peer = %app_state.peer_addr, "Rate limit exceeded");
+                metrics::connection_rejected_access_denied();
+                return ServerAuthResult::Denied;
+            }
+        }
+
         let mut auth_state = AuthState {
             local_addr: &app_state.local_addr,
             peer_addr: &app_state.peer_addr,
             internal_ip: &app_state.internal_ip,
         };
-        let authorized = self.0.authorize(method, &mut auth_state);
+        let authorized = self.auth.authorize(method, &mut auth_state);
         if matches!(authorized, ServerAuthResult::Denied) {
             metrics::connection_rejected_access_denied();
         }
@@ -277,7 +301,7 @@ pub async fn server<SA: for<'a> ServerAuth<AuthState<'a>> + Sync + Send + 'stati
     let ip_manager = Arc::new(ip_manager);
 
     let connection_type = config.mode;
-    let auth = Arc::new(AuthAdapter(config.auth));
+    let auth = Arc::new(AuthAdapter::new(config.auth));
 
     let inside_io: Arc<dyn InsideIO> = match config.inside_io.take() {
         Some(io) => io,
