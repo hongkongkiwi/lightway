@@ -58,14 +58,17 @@ pub struct Config {
     pub tun_ip: Option<Ipv4Addr>,
 
     /// Server IP to send in network_config message
+    /// For production use, configure an explicit IP from your IP pool
     #[clap(long, default_value = "10.125.0.6")]
     pub lightway_server_ip: Ipv4Addr,
 
     /// Client IP to send in network_config message
+    /// For production use, configure an explicit IP from your IP pool
     #[clap(long, default_value = "10.125.0.5")]
     pub lightway_client_ip: Ipv4Addr,
 
     /// DNS IP to send in network_config message
+    /// For production use, configure an explicit IP from your IP pool
     #[clap(long, default_value = "10.125.0.1")]
     pub lightway_dns_ip: Ipv4Addr,
 
