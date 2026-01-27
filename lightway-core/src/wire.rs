@@ -42,6 +42,7 @@ use crate::borrowed_bytesmut::BorrowedBytesMut;
 use bytes::{Buf, BufMut, BytesMut};
 use more_asserts::*;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
+use rand::rngs::OsRng;
 use rand::Rng;
 
 // A module for each frame type with a payload
@@ -157,6 +158,30 @@ impl rand::distr::Distribution<SessionId> for rand::distr::StandardUniform {
                 break candidate;
             }
         }
+    }
+}
+
+/// Generate a cryptographically secure session ID using OS RNG.
+///
+/// This function uses the operating system's secure random number generator
+/// (typically /dev/urandom on Unix or CryptGenRandom on Windows) which is
+/// suitable for cryptographic purposes.
+///
+/// Uses iteration instead of recursion to avoid any theoretical stack risk.
+/// The probability of hitting a reserved value is 2^-64, so iteration will
+/// complete in a single step almost certainly.
+pub fn secure_random_session_id() -> SessionId {
+    loop {
+        let mut bytes = [0u8; 8];
+        OsRng.fill_bytes(&mut bytes);
+        let session_id = SessionId(bytes);
+
+        // Only return non-reserved values
+        // Reserved values are EMPTY ([0,0,0,0,0,0,0,0]) and REJECTED ([0xff,0xff,...])
+        if !session_id.is_reserved() {
+            return session_id;
+        }
+        // Loop iterates - extremely unlikely to happen more than once
     }
 }
 
