@@ -235,6 +235,10 @@ pub enum ConnectionError {
     /// Encoding Request Retransmit CB does not exist
     #[error("Schedule Encoding Request Retransmit Cb Does Not Exist")]
     EncodingReqRetransmitCbDoesNotExist,
+
+    /// Too many connections from this IP (DoS protection)
+    #[error("Too many connections")]
+    TooManyConnections,
 }
 
 impl ConnectionError {
@@ -287,6 +291,7 @@ impl ConnectionError {
                     ExpreslaneDegraded => false,
                     ExpresslaneError(_) => false,
                     WolfSSL(_) => false,
+                    TooManyConnections => true, // Rate limited, should not retry immediately
                 }
             }
         }

@@ -10,6 +10,7 @@ use std::{
         Arc, Weak,
         atomic::{AtomicUsize, Ordering},
     },
+    time::{Duration, Instant},
 };
 use thiserror::Error;
 use time::Duration;
@@ -46,6 +47,65 @@ const CONNECTION_MAX_IDLE_AGE: Duration = Duration::days(1);
 /// How long a connection can take to become Online
 /// If connection is not online by this time, it will be closed to save resources
 const CONNECTION_STALE_AGE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Maximum concurrent connections per IP address
+const MAX_CONNECTIONS_PER_IP: usize = 10;
+
+/// Maximum new connection attempts per IP per minute
+const MAX_CONNECTION_RATE_PER_IP_PER_MINUTE: u32 = 30;
+
+/// Connection rate limiter entry for a single IP
+#[derive(Debug, Clone)]
+struct ConnectionRateLimitEntry {
+    connection_count: usize,
+    last_connection_time: Instant,
+    requests_this_minute: u32,
+    window_start: Instant,
+}
+
+impl ConnectionRateLimitEntry {
+    fn new() -> Self {
+        Self {
+            connection_count: 0,
+            last_connection_time: Instant::now(),
+            requests_this_minute: 0,
+            window_start: Instant::now(),
+        }
+    }
+
+    fn can_create_connection(&mut self) -> bool {
+        let now = Instant::now();
+
+        // Reset window if expired (1 minute)
+        if now.duration_since(self.window_start) > Duration::from_secs(60) {
+            self.window_start = now;
+            self.requests_this_minute = 0;
+        }
+
+        // Check rate limit
+        if self.requests_this_minute >= MAX_CONNECTION_RATE_PER_IP_PER_MINUTE {
+            return false;
+        }
+
+        self.requests_this_minute += 1;
+        true
+    }
+
+    fn connection_created(&mut self) {
+        self.connection_count += 1;
+        self.last_connection_time = Instant::now();
+    }
+
+    fn connection_removed(&mut self) {
+        if self.connection_count > 0 {
+            self.connection_count -= 1;
+        }
+    }
+
+    fn is_over_limit(&self) -> bool {
+        self.connection_count >= MAX_CONNECTIONS_PER_IP
+    }
+}
 
 impl connection_map::Value for Connection {
     fn socket_addr(&self) -> SocketAddr {
@@ -91,6 +151,8 @@ pub(crate) struct ConnectionManager {
     /// Total number of sessions there have ever been
     total_sessions: AtomicUsize,
     inside_io_codec_factory: Option<PacketCodecFactoryType>,
+    /// Per-IP connection rate limiter for DoS protection
+    connection_rate_limiter: Mutex<HashMap<SocketAddr, ConnectionRateLimitEntry>>,
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -304,6 +366,7 @@ impl ConnectionManager {
             pending_session_id_rotations: Mutex::new(Default::default()),
             total_sessions: Default::default(),
             inside_io_codec_factory,
+            connection_rate_limiter: Mutex::new(Default::default()),
         });
 
         conn_manager.spawn_periodic_task(
@@ -364,6 +427,30 @@ impl ConnectionManager {
         socket_addr: SocketAddr,
         outside_io: OutsideIOSendCallbackArg,
     ) -> Result<Arc<Connection>, ConnectionManagerError> {
+        // Check rate limiting before creating new connection
+        {
+            let mut rate_limiter = self.connection_rate_limiter.lock();
+            let entry = rate_limiter.entry(socket_addr).or_insert_with(|| {
+                ConnectionRateLimitEntry::new()
+            });
+
+            if entry.is_over_limit() {
+                warn!(?socket_addr, "Connection limit exceeded for IP");
+                metrics::connection_rejected_rate_limited();
+                return Err(ConnectionManagerError::LwConnection(
+                    ConnectionError::TooManyConnections,
+                ));
+            }
+
+            if !entry.can_create_connection() {
+                warn!(?socket_addr, "Connection rate limit exceeded for IP");
+                metrics::connection_rejected_rate_limited();
+                return Err(ConnectionManagerError::LwConnection(
+                    ConnectionError::TooManyConnections,
+                ));
+            }
+        }
+
         let conn = new_connection(
             self.clone(),
             &self.ctx,
@@ -371,6 +458,15 @@ impl ConnectionManager {
             socket_addr,
             outside_io,
         )?;
+
+        // Update rate limiter after successful connection creation
+        {
+            let mut rate_limiter = self.connection_rate_limiter.lock();
+            if let Some(entry) = rate_limiter.get_mut(&socket_addr) {
+                entry.connection_created();
+            }
+        }
+
         // TODO: what if addr was already present?
         self.connections.lock().insert(&conn)?;
         Ok(conn)
@@ -417,6 +513,30 @@ impl ConnectionManager {
                 }
             }
             connection_map::Entry::Vacant(e) if session_id == SessionId::EMPTY => {
+                // Check rate limiting before creating new connection
+                {
+                    let mut rate_limiter = self.connection_rate_limiter.lock();
+                    let entry = rate_limiter.entry(addr).or_insert_with(|| {
+                        ConnectionRateLimitEntry::new()
+                    });
+
+                    if entry.is_over_limit() {
+                        warn!(?addr, "Connection limit exceeded for IP");
+                        metrics::connection_rejected_rate_limited();
+                        return Err(ConnectionManagerError::LwConnection(
+                            ConnectionError::TooManyConnections,
+                        ));
+                    }
+
+                    if !entry.can_create_connection() {
+                        warn!(?addr, "Connection rate limit exceeded for IP");
+                        metrics::connection_rejected_rate_limited();
+                        return Err(ConnectionManagerError::LwConnection(
+                            ConnectionError::TooManyConnections,
+                        ));
+                    }
+                }
+
                 info!(?addr, %protocol_version, "New Client");
                 let outside_io = create_io();
                 let c = new_connection(
@@ -426,6 +546,15 @@ impl ConnectionManager {
                     local_addr,
                     outside_io,
                 )?;
+
+                // Update rate limiter after successful connection creation
+                {
+                    let mut rate_limiter = self.connection_rate_limiter.lock();
+                    if let Some(entry) = rate_limiter.get_mut(&addr) {
+                        entry.connection_created();
+                    }
+                }
+
                 e.insert(&c)?;
                 Ok((c, false))
             }
@@ -463,7 +592,13 @@ impl ConnectionManager {
     }
 
     pub(crate) fn remove_connection(&self, conn: &Connection) {
-        self.connections.lock().remove(conn)
+        self.connections.lock().remove(conn);
+        // Update rate limiter - decrement connection count for this IP
+        let addr = conn.peer_addr();
+        let mut rate_limiter = self.connection_rate_limiter.lock();
+        if let Some(entry) = rate_limiter.get_mut(&addr) {
+            entry.connection_removed();
+        }
     }
 
     pub(crate) fn begin_session_id_rotation(
