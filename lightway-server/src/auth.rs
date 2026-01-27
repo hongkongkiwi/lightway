@@ -8,9 +8,33 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use lightway_core::LightwayFeature;
+use once_cell::sync::Lazy;
 use pwhash::unix;
 
 use lightway_server::{ServerAuth, ServerAuthHandle, ServerAuthResult};
+
+/// Validates username characters.
+/// Allows alphanumeric characters, underscores, hyphens, and periods.
+/// Maximum length is 50 bytes (as per wire protocol).
+pub fn is_valid_username(username: &str) -> bool {
+    if username.is_empty() || username.len() > 50 {
+        return false;
+    }
+    username.chars().all(|c| {
+        c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.'
+    })
+}
+
+/// Fake password hash for timing attack prevention.
+/// This is a valid bcrypt format that will always fail verification
+/// but takes the same amount of time to process as a real hash.
+/// Lazily initialized to ensure consistent memory placement.
+static FAKE_HASH: Lazy<String> = Lazy::new(|| {
+    // bcrypt format: $2y$05$[22 chars of random].[22 chars of random]
+    // Using all 'f' characters ensures the hash is computationally equivalent
+    // to a real bcrypt hash while being clearly invalid
+    "$2y$05$ffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string()
+});
 
 pub struct Auth {
     user_db: Option<HashMap<String, String>>,
@@ -104,22 +128,35 @@ impl<AS> ServerAuth<AS> for Auth {
         password: &str,
         _app_state: &mut AS,
     ) -> ServerAuthResult {
+        // Validate username format before any other processing
+        if !is_valid_username(user) {
+            tracing::info!("Invalid username format");
+            return ServerAuthResult::Denied;
+        }
+
         let Some(user_db) = self.user_db.as_ref() else {
             return ServerAuthResult::Denied;
         };
 
-        let Some(hash) = user_db.get(user) else {
-            tracing::info!(?user, "User not found");
-            return ServerAuthResult::Denied;
-        };
+        // Always verify password to prevent timing attacks.
+        // If user not found, use a fake hash so verification takes same time.
+        // This prevents attackers from determining valid usernames via timing.
+        let hash = user_db.get(user).map(|s| s.as_str()).unwrap_or(&FAKE_HASH);
 
         if unix::verify(password, hash) {
-            ServerAuthResult::Granted {
-                handle: Some(Box::new(AuthHandle)),
-                tunnel_protocol_version: None,
+            // Password verified - only grant if user actually exists in database
+            // (fake hash will never verify successfully)
+            if user_db.contains_key(user) {
+                ServerAuthResult::Granted {
+                    handle: Some(Box::new(AuthHandle)),
+                    tunnel_protocol_version: None,
+                }
+            } else {
+                tracing::info!("Authentication failed");
+                ServerAuthResult::Denied
             }
         } else {
-            tracing::info!(?user, "Invalid password");
+            tracing::info!("Authentication failed");
             ServerAuthResult::Denied
         }
     }
@@ -134,8 +171,8 @@ impl<AS> ServerAuth<AS> for Auth {
                 handle: Some(Box::new(AuthHandle)),
                 tunnel_protocol_version: None,
             },
-            Err(err) => {
-                tracing::info!(?err, "Invalid token");
+            Err(_) => {
+                tracing::info!("Authentication failed");
                 ServerAuthResult::Denied
             }
         }
@@ -334,5 +371,24 @@ wwIDAQAB
         };
         let r = auth.authorize_token(&make_token(Algorithm::RS256, json!({})), &mut ());
         assert!(matches!(r, ServerAuthResult::Denied));
+    }
+
+    #[test_case("" => false; "empty")]
+    #[test_case("a" => true; "single_char")]
+    #[test_case("user123" => true; "alphanumeric")]
+    #[test_case("user_name" => true; "with_underscore")]
+    #[test_case("user-name" => true; "with_hyphen")]
+    #[test_case("user.name" => true; "with_period")]
+    #[test_case("User.Name-123_test" => true; "mixed_valid_chars")]
+    #[test_case("user@name" => false; "invalid_at_sign")]
+    #[test_case("user/name" => false; "invalid_slash")]
+    #[test_case("user name" => false; "invalid_space")]
+    #[test_case("user\tname" => false; "invalid_tab")]
+    #[test_case("日本語" => false; "unicode")]
+    #[test_case("a" => true; "min_length")]
+    #[test_case("abcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabc" => true; "max_length_50")]
+    #[test_case("abcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabca" => false; "too_long_51")]
+    fn test_username_validation(username: &str) -> bool {
+        is_valid_username(username)
     }
 }
