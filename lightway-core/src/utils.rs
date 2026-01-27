@@ -36,9 +36,11 @@ pub(crate) fn ipv4_is_valid_packet(buf: &[u8]) -> bool {
         return false;
     }
 
-    // Total length field (bytes 2-3) must match buffer length
+    // Validate total length field is reasonable (handles truncated/corrupted packets)
+    // Allow packets where total_length >= buffer.len() (we might have partial data)
     let total_length = u16::from_be_bytes([buf[2], buf[3]]) as usize;
-    if total_length != buf.len() {
+    // Reject if total_length is impossibly small (< header) or doesn't cover what we have
+    if total_length < header_bytes || total_length < buf.len() {
         return false;
     }
 
