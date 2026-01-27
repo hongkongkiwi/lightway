@@ -19,6 +19,8 @@ static METRIC_CONNECTION_REJECTED_NO_FREE_IP: LazyLock<Counter> =
     LazyLock::new(|| counter!("conn_rejected_no_free_ip"));
 static METRIC_CONNECTION_REJECTED_ACCESS_DENIED: LazyLock<Counter> =
     LazyLock::new(|| counter!("conn_rejected_access_denied"));
+static METRIC_CONNECTION_REJECTED_RATE_LIMITED: LazyLock<Counter> =
+    LazyLock::new(|| counter!("conn_rejected_rate_limited"));
 static METRIC_CONNECTION_DATA_AFT_DISCONNECT: LazyLock<Counter> =
     LazyLock::new(|| counter!("conn_data_after_disconnect"));
 const METRIC_CONNECTION_TLS_ERROR: &str = "conn_tls_error";
@@ -196,6 +198,12 @@ pub(crate) fn connection_rejected_no_free_ip() {
 /// authentication failed.
 pub(crate) fn connection_rejected_access_denied() {
     METRIC_CONNECTION_REJECTED_ACCESS_DENIED.increment(1);
+}
+
+/// Connection lifecycle: [`lightway_core::Connection`] rejected,
+/// rate limited (DoS protection).
+pub(crate) fn connection_rejected_rate_limited() {
+    METRIC_CONNECTION_REJECTED_RATE_LIMITED.increment(1);
 }
 
 /// Connection lifecycle: [`lightway_core::Connection`] aged out due
