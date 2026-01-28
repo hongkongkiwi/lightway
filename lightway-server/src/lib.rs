@@ -95,7 +95,10 @@ impl<SA: for<'a> ServerAuth<AuthState<'a>>> ServerAuth<connection::ConnectionSta
     ) -> ServerAuthResult {
         // Check rate limiting if limiter is configured
         if let Some(limiter) = &self.rate_limiter {
-            if limiter.is_rate_limited(&app_state.peer_addr) {
+            // Use record_attempt to atomically check and record the attempt
+            // This avoids TOCTOU race where is_rate_limited could be called
+            // multiple times without incrementing the counter
+            if !limiter.record_attempt(&app_state.peer_addr) {
                 tracing::warn!(peer = %app_state.peer_addr, "Rate limit exceeded");
                 metrics::connection_rejected_access_denied();
                 return ServerAuthResult::Denied;

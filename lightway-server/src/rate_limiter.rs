@@ -64,6 +64,7 @@ impl RateLimitBucket {
 pub struct RateLimiter {
     inner: Arc<RwLock<HashMap<SocketAddr, RateLimitBucket>>>,
     config: RateLimiterConfig,
+    last_cleanup: std::time::Instant,
 }
 
 impl RateLimiter {
@@ -77,6 +78,7 @@ impl RateLimiter {
         Self {
             inner: Arc::new(RwLock::new(HashMap::new())),
             config,
+            last_cleanup: std::time::Instant::now(),
         }
     }
 
@@ -93,6 +95,9 @@ impl RateLimiter {
         }
 
         let mut buckets = self.inner.write();
+
+        // Opportunistic cleanup
+        self.opportunistic_cleanup(&mut buckets);
 
         if let Some(bucket) = buckets.get(addr) {
             if bucket.is_expired(self.config.window_duration) {
@@ -117,8 +122,19 @@ impl RateLimiter {
 
         let mut buckets = self.inner.write();
 
+        // Opportunistic cleanup
+        self.opportunistic_cleanup(&mut buckets);
+
         let bucket = buckets.entry(*addr).or_insert_with(RateLimitBucket::new);
         bucket.record_request(self.config.window_duration, self.config.max_requests)
+    }
+
+    /// Perform cleanup if enough time has passed since last cleanup
+    fn opportunistic_cleanup(&self, buckets: &mut parking_lot::RwLockWriteGuard<'_, HashMap<SocketAddr, RateLimitBucket>>) {
+        if self.last_cleanup.elapsed() >= self.config.cleanup_interval {
+            buckets.retain(|_, bucket| !bucket.is_expired(self.config.window_duration));
+            self.last_cleanup = std::time::Instant::now();
+        }
     }
 
     /// Clean up expired entries
