@@ -55,11 +55,11 @@ impl RateLimitBucket {
         }
 
         self.count += 1;
-        self.count <= 10 // Allow 10 requests per window
+        self.count <= self.config.max_requests
     }
 }
 
-/// Thread-safe rate limiter using token bucket algorithm
+/// Thread-safe rate limiter using a sliding window counter algorithm
 #[derive(Clone)]
 pub struct RateLimiter {
     inner: Arc<RwLock<HashMap<SocketAddr, RateLimitBucket>>>,
@@ -80,8 +80,18 @@ impl RateLimiter {
         }
     }
 
+    /// Check if rate limiting is enabled
+    pub fn is_enabled(&self) -> bool {
+        self.config.max_requests > 0
+    }
+
     /// Check if an address is rate limited
     pub fn is_rate_limited(&self, addr: &SocketAddr) -> bool {
+        // Rate limiting is disabled if max_requests is 0
+        if self.config.max_requests == 0 {
+            return false;
+        }
+
         let mut buckets = self.inner.write();
 
         if let Some(bucket) = buckets.get(addr) {
@@ -100,6 +110,11 @@ impl RateLimiter {
 
     /// Record a request and return true if allowed
     pub fn record_request(&self, addr: &SocketAddr) -> bool {
+        // Rate limiting is disabled if max_requests is 0
+        if self.config.max_requests == 0 {
+            return true;
+        }
+
         let mut buckets = self.inner.write();
 
         let bucket = buckets.entry(*addr).or_insert_with(RateLimitBucket::new);
@@ -133,9 +148,19 @@ pub struct AuthRateLimiter {
 impl AuthRateLimiter {
     /// Create a new authentication rate limiter with default settings
     pub fn new() -> Self {
+        Self::with_config(RateLimiterConfig::default())
+    }
+
+    /// Create an authentication rate limiter with custom configuration
+    pub fn with_config(config: RateLimiterConfig) -> Self {
         Self {
-            rate_limiter: RateLimiter::new(),
+            rate_limiter: RateLimiter::with_config(config),
         }
+    }
+
+    /// Check if rate limiting is enabled
+    pub fn is_enabled(&self) -> bool {
+        self.rate_limiter.is_enabled()
     }
 
     /// Check if the given peer address is currently rate limited
@@ -153,6 +178,11 @@ impl AuthRateLimiter {
     pub fn reset(&self, addr: &SocketAddr) {
         let mut buckets = self.rate_limiter.inner.write();
         buckets.remove(addr);
+    }
+
+    /// Clean up expired entries to prevent memory growth
+    pub fn cleanup(&self) {
+        self.rate_limiter.cleanup();
     }
 }
 
