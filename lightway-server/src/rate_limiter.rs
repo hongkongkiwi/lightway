@@ -44,7 +44,7 @@ impl RateLimitBucket {
         self.window_start.elapsed() > window_duration
     }
 
-    fn record_request(&mut self, window_duration: Duration) -> bool {
+    fn record_request(&mut self, window_duration: Duration, max_requests: u32) -> bool {
         let elapsed = self.window_start.elapsed();
 
         if elapsed > window_duration {
@@ -55,7 +55,7 @@ impl RateLimitBucket {
         }
 
         self.count += 1;
-        self.count <= self.config.max_requests
+        self.count <= max_requests
     }
 }
 
@@ -118,7 +118,7 @@ impl RateLimiter {
         let mut buckets = self.inner.write();
 
         let bucket = buckets.entry(*addr).or_insert_with(RateLimitBucket::new);
-        bucket.record_request(self.config.window_duration)
+        bucket.record_request(self.config.window_duration, self.config.max_requests)
     }
 
     /// Clean up expired entries
