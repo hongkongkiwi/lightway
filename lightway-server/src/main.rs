@@ -1,5 +1,6 @@
 mod args;
 mod auth;
+mod rate_limiter;
 
 use std::path::PathBuf;
 
